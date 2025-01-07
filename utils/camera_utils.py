@@ -21,7 +21,7 @@ from colorama import Fore, init, Style
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale, background):
-    orig_w, orig_h = cam_info.width, cam_info.height
+    orig_w, orig_h = cam_info.image.size
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -42,13 +42,10 @@ def loadCam(args, id, cam_info, resolution_scale, background):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    gt_image = PILtoTorch(cam_info.image, resolution, background)
-
-    return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
-                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
-                  image=gt_image, image_name=cam_info.image_name, 
-                  resolution_scale=resolution_scale, 
-                  uid=id, data_device=args.data_device)
+    return Camera(resolution, colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, Cx=cam_info.CX, Cy=cam_info.CY, 
+                  FoVx=cam_info.FovX, FoVy=cam_info.FovY, resolution_scale=resolution_scale, image=cam_info.image, 
+                  alpha_mask=cam_info.mask, image_name=cam_info.image_name, image_path=cam_info.image_path, uid=id, 
+                  data_device=args.data_device, data_format=args.data_format, gt_depth=cam_info.depth, depth_params=cam_info.depth_params)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args, background):
     camera_list = []

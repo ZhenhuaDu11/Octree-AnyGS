@@ -1,0 +1,102 @@
+# Model Parameters
+model_params: {
+    model_config: {
+        name: "GaussianModel",
+        kwargs: {
+            gs_attr: "implicit2D", 
+            color_attr: "Sh2", 
+            feat_dim: 32, 
+            view_dim: 0,
+            appearance_dim: 0,
+            n_offsets: 10, 
+            voxel_size: 0.001,
+            render_mode: "RGB+ED", 
+        }
+    },
+    source_path: "/cpfs01/shared/pjlab_lingjun_landmarks/yumulin_group/data/urbangs/synthetic/citysample",
+    dataset_name: "urbangs",
+    scene_name: "citysample", 
+    resolution: -1,
+    white_background: False,
+    random_background: False,
+    resolution_scales: [1.0],
+    data_device: "cpu",
+    eval: True,
+    ratio: 1,
+    data_format: "city",
+    llffhold: 32, 
+    add_mask: True,
+    add_depth: True,
+}
+
+# Pipeline Parameters
+pipeline_params: {
+    vis_step: 5000,
+    add_prefilter: True,
+}
+
+# Optimization Parameters
+optim_params: {
+    iterations: 40_000,
+    position_lr_init: 0.0,
+    position_lr_final: 0.0,
+    position_lr_delay_mult: 0.01,
+    position_lr_max_steps: 40_000,
+    
+    offset_lr_init: 0.001,
+    offset_lr_final: 0.00001,
+    offset_lr_delay_mult: 0.01,
+    offset_lr_max_steps: 40_000,
+
+    feature_lr: 0.0075,
+    scaling_lr: 0.007,
+    rotation_lr: 0.002,
+    
+    mlp_opacity_lr_init: 0.002,
+    mlp_opacity_lr_final: 0.00002,  
+    mlp_opacity_lr_delay_mult: 0.01,
+    mlp_opacity_lr_max_steps: 40_000,
+
+    mlp_cov_lr_init: 0.004,
+    mlp_cov_lr_final: 0.004,
+    mlp_cov_lr_delay_mult: 0.01,
+    mlp_cov_lr_max_steps: 40_000,
+    
+    mlp_color_lr_init: 0.008,
+    mlp_color_lr_final: 0.00005,
+    mlp_color_lr_delay_mult: 0.01,
+    mlp_color_lr_max_steps: 40_000,
+
+    mlp_color_lr_init: 0.008,
+    mlp_color_lr_final: 0.00005,
+    mlp_color_lr_delay_mult: 0.01,
+    mlp_color_lr_max_steps: 40_000,
+
+    appearance_lr_init: 0.05,
+    appearance_lr_final: 0.0005,
+    appearance_lr_delay_mult: 0.01,
+    appearance_lr_max_steps: 40_000,
+
+    lambda_dssim: 0.2,
+    lambda_dreg: 0.01,
+
+    lambda_normal: 0.00,
+    normal_start_iter: 7_000,
+    lambda_dist: 0.00,
+    dist_start_iter: 3_000,
+
+    start_depth: 500,
+    depth_l1_weight_init: 1.00,
+    depth_l1_weight_final: 0.01,
+    
+    start_stat: 500,
+    update_from: 1500,
+    update_interval: 100,
+    update_until: 20000,
+    min_opacity: 0.005,
+    success_threshold: 0.8,
+    densify_grad_threshold: 0.0002,
+    overlap: False,
+    densification: True,
+    growing_strategy: "mean",
+}

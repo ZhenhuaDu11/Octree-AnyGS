@@ -10,6 +10,7 @@
 #
 
 import torch
+from PIL import Image
 
 def mse(img1, img2):
     return (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
@@ -17,3 +18,9 @@ def mse(img1, img2):
 def psnr(img1, img2):
     mse = (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
     return 20 * torch.log10(1.0 / torch.sqrt(mse))
+
+def save_rgba(img, save_path):
+    img = (img * 255).byte()
+    img = img.permute(1, 2, 0).detach().cpu().numpy()
+    img = Image.fromarray(img, 'RGBA')
+    img.save(save_path)

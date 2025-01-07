@@ -30,7 +30,7 @@ from tqdm import tqdm
 from utils.general_utils import safe_state, parse_cfg, get_render_func
 from argparse import ArgumentParser
 
-def render_set(base_model, model_path, name, iteration, views, gaussians, pipe, background, render_mode, ape_code):
+def render_set(model_path, name, iteration, views, gaussians, pipe, background):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     makedirs(render_path, exist_ok=True)
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
@@ -44,10 +44,7 @@ def render_set(base_model, model_path, name, iteration, views, gaussians, pipe, 
 
         torch.cuda.synchronize(); t0 = time.time()
 
-        if ape_code==-1:
-            render_pkg = getattr(modules, get_render_func(base_model))(view, gaussians, pipe, background, iteration, render_mode)
-        else:
-            render_pkg = getattr(modules, get_render_func(base_model))(view, gaussians, pipe, background, iteration, render_mode, ape_code)
+        render_pkg = getattr(modules, 'render')(view, gaussians, pipe, background, iteration)
         
         torch.cuda.synchronize(); t1 = time.time()
         t_list.append(t1-t0)
@@ -69,20 +66,20 @@ def render_set(base_model, model_path, name, iteration, views, gaussians, pipe, 
 
 def render_sets(dataset, opt, pipe, iteration, skip_train, skip_test, ape_code):
     with torch.no_grad():
-        modules = __import__('scene.gs_model_'+dataset.base_model, fromlist=[''])
         model_config = dataset.model_config
+        modules = __import__('scene.'+ model_config['kwargs']['gs_attr'][:-2] +'_model', fromlist=[''])
         gaussians = getattr(modules, model_config['name'])(**model_config['kwargs'])
-        scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False, resolution_scales=dataset.resolution_scales)
+        gaussians.ape_code = ape_code
+        scene = Scene(dataset, opt, gaussians, load_iteration=iteration, shuffle=False)
         gaussians.eval()
-        gaussians.set_coarse_interval(opt)
         if not os.path.exists(dataset.model_path):
             os.makedirs(dataset.model_path)
         
         if not skip_train:
-            render_set(dataset.base_model, dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background, dataset.render_mode, ape_code)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipe, scene.background)
 
         if not skip_test:
-            render_set(dataset.base_model, dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipe, scene.background, dataset.render_mode, ape_code)
+            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipe, scene.background)
 
 if __name__ == "__main__":
     # Set up command line argument parser

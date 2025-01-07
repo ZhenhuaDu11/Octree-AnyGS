@@ -16,7 +16,35 @@ import numpy as np
 import random
 from types import SimpleNamespace
 from sklearn.neighbors import NearestNeighbors
+import matplotlib.cm as cm
 
+
+def visualize_depth(depth, near=0.2, far=80, linear=False):
+    depth = depth[0].clone().detach().cpu().numpy()
+    colormap = cm.get_cmap('turbo')
+    curve_fn = lambda x: -np.log(x + np.finfo(np.float32).eps)
+    if linear:
+        curve_fn = lambda x: -x
+    eps = np.finfo(np.float32).eps
+    # near = near if near else depth.min()
+    # far = far if far else depth.max()
+    near = depth.min()
+    far = depth.max()
+    near -= eps
+    far += eps
+    # near, far, depth = [curve_fn(x) for x in [near, far, depth]]
+    depth = np.nan_to_num(
+        np.clip((depth - np.minimum(near, far)) / np.abs(far - near), 0, 1))
+    vis = colormap(depth)[:, :, :3]
+    out_depth = np.clip(np.nan_to_num(vis), 0., 1.) * 255
+    out_depth = torch.from_numpy(out_depth).permute(2, 0, 1).float().cuda() / 255
+    return out_depth
+
+def visualize_normal(normals, camera):
+
+    normals = (normals + 1) / 2.0 # to 0 - 1
+    normals = (normals.cpu().numpy() * 255).astype(np.uint8)
+    return normals
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
@@ -28,17 +56,13 @@ def get_render_func(base_model):
     else:
         raise ValueError("Unknown base model.")
 
-def PILtoTorch(pil_image, resolution, background):
+def PILtoTorch(pil_image, resolution):
     resized_image_PIL = pil_image.resize(resolution)
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
-    if resized_image.shape[-1] == 4:
-        resized_image = resized_image.cuda()
-        alpha = resized_image[:, :, 3:4]
-        resized_image = resized_image[:, :, :3] * alpha + background * (1 - alpha)
-        resized_image = resized_image.permute(2, 0, 1)
+    if len(resized_image.shape) == 3:
+        return resized_image.permute(2, 0, 1)
     else:
-        resized_image = resized_image.permute(2, 0, 1)
-    return resized_image
+        return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
 
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
@@ -151,6 +175,15 @@ def parse_cfg(cfg):
     op = SimpleNamespace(**cfg.get('optim_params', {}))
     pp = SimpleNamespace(**cfg.get('pipeline_params', {}))
     return lp, op, pp
+
+def parse_cfg_dp(cfg):
+    dp = SimpleNamespace(**cfg.get('data_params', {}))
+    return dp
+
+def parse_cfg_pp_op(cfg):
+    pp = SimpleNamespace(**cfg.get('pipeline_params', {}))
+    op = SimpleNamespace(**cfg.get('optim_params', {}))
+    return pp, op
 
 def knn(x, K):
     x_np = x.cpu().numpy()

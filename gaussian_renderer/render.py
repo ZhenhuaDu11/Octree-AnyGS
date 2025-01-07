@@ -13,47 +13,64 @@ import math
 import gsplat
 from gsplat.cuda._wrapper import fully_fused_projection, fully_fused_projection_2dgs
 
-def render(viewpoint_camera, pc, pipe, bg_color, iteration, render_mode, ape_code=-1):
+def render(viewpoint_camera, pc, pipe, bg_color, iteration):
     """
     Render the scene. 
     
     Background tensor (bg_color) must be on GPU!
     """
     pc.set_anchor_mask(viewpoint_camera.camera_center, iteration, viewpoint_camera.resolution_scale)
-    visible_mask = prefilter_voxel(viewpoint_camera, pc, pipe, bg_color).squeeze()
-    xyz, color, opacity, scaling, rot, sh_degree, selection_mask = pc.generate_neural_gaussians(viewpoint_camera, visible_mask, ape_code)
+    visible_mask = prefilter_voxel(viewpoint_camera, pc).squeeze() if pipe.add_prefilter else pc._anchor_mask    
+    xyz, color, opacity, scaling, rot, sh_degree, selection_mask = pc.generate_gaussians(viewpoint_camera, visible_mask)
     
     # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-
-    focal_length_x = viewpoint_camera.image_width / (2 * tanfovx)
-    focal_length_y = viewpoint_camera.image_height / (2 * tanfovy)
-    K = torch.tensor(
-        [
-            [focal_length_x, 0, viewpoint_camera.image_width / 2.0],
-            [0, focal_length_y, viewpoint_camera.image_height / 2.0],
+    K = torch.tensor([
+            [viewpoint_camera.fx, 0, viewpoint_camera.cx],
+            [0, viewpoint_camera.fy, viewpoint_camera.cy],
             [0, 0, 1],
-        ],
-        device="cuda",
-    )
-    
+        ],dtype=torch.float32, device="cuda")
     viewmat = viewpoint_camera.world_view_transform.transpose(0, 1) # [4, 4]
-    render_colors, render_alphas, info = gsplat.rasterization(
-        means=xyz,  # [N, 3]
-        quats=rot,  # [N, 4]
-        scales=scaling,  # [N, 3]
-        opacities=opacity.squeeze(-1),  # [N,]
-        colors=color,
-        viewmats=viewmat[None],  # [1, 4, 4]
-        Ks=K[None],  # [1, 3, 3]
-        backgrounds=bg_color[None],
-        width=int(viewpoint_camera.image_width),
-        height=int(viewpoint_camera.image_height),
-        packed=False,
-        sh_degree=sh_degree,
-        render_mode=render_mode,
-    )
+
+    if pc.gs_attr[-2:] == "3D":
+        render_colors, render_alphas, info = gsplat.rasterization(
+            means=xyz,  # [N, 3]
+            quats=rot,  # [N, 4]
+            scales=scaling,  # [N, 3]
+            opacities=opacity.squeeze(-1),  # [N,]
+            colors=color,
+            viewmats=viewmat[None],  # [1, 4, 4]
+            Ks=K[None],  # [1, 3, 3]
+            backgrounds=bg_color[None],
+            width=int(viewpoint_camera.image_width),
+            height=int(viewpoint_camera.image_height),
+            packed=False,
+            sh_degree=sh_degree,
+            render_mode=pc.render_mode,
+        )
+    elif pc.gs_attr[-2:] == "2D":
+        (render_colors, 
+        render_alphas,
+        render_normals,
+        render_normals_from_depth,
+        render_distort,
+        render_median,), info = \
+        gsplat.rasterization_2dgs(
+            means=xyz,  # [N, 3]
+            quats=rot,  # [N, 4]
+            scales=scaling,  # [N, 3]
+            opacities=opacity.squeeze(-1),  # [N,]
+            colors=color,
+            viewmats=viewmat[None],  # [1, 4, 4]
+            Ks=K[None],  # [1, 3, 3]
+            backgrounds=bg_color[None],
+            width=int(viewpoint_camera.image_width),
+            height=int(viewpoint_camera.image_height),
+            packed=False,
+            sh_degree=sh_degree,
+            render_mode=pc.render_mode,
+        )
+    else:
+        raise ValueError(f"Unknown gs_attr: {pc.gs_attr}")
 
     # [1, H, W, 3] -> [3, H, W]
     if render_colors.shape[-1] == 4:
@@ -70,145 +87,7 @@ def render(viewpoint_camera, pc, pipe, bg_color, iteration, render_mode, ape_cod
     except:
         pass
 
-    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-    return_dict = {
-        "render": rendered_image,
-        "scaling": scaling,
-        "viewspace_points": info["means2d"],
-        "visibility_filter" : radii > 0,
-        "visible_mask": visible_mask,
-        "selection_mask": selection_mask,
-        "opacity": opacity,
-        "render_depth": depth
-    }
-    
-    return return_dict
-
-
-def prefilter_voxel(viewpoint_camera, pc, pipe, bg_color):
-    """
-    Render the scene. 
-    
-    Background tensor (bg_color) must be on GPU!
-    """
-    
-    means = pc.get_anchor[pc._anchor_mask]
-    scales = pc.get_scaling[pc._anchor_mask][:, :3]
-    quats = pc.get_rotation[pc._anchor_mask]
-    # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    focal_length_x = viewpoint_camera.image_width / (2 * tanfovx)
-    focal_length_y = viewpoint_camera.image_height / (2 * tanfovy)
-
-    Ks = torch.tensor([
-            [focal_length_x, 0, viewpoint_camera.image_width / 2.0],
-            [0, focal_length_y, viewpoint_camera.image_height / 2.0],
-            [0, 0, 1],
-        ],device="cuda",)[None]
-    viewmats = viewpoint_camera.world_view_transform.transpose(0, 1)[None]
-
-    N = means.shape[0]
-    C = viewmats.shape[0]
-    device = means.device
-    assert means.shape == (N, 3), means.shape
-    assert quats.shape == (N, 4), quats.shape
-    assert scales.shape == (N, 3), scales.shape
-    assert viewmats.shape == (C, 4, 4), viewmats.shape
-    assert Ks.shape == (C, 3, 3), Ks.shape
-
-    # Project Gaussians to 2D. Directly pass in {quats, scales} is faster than precomputing covars.
-    proj_results = fully_fused_projection(
-        means,
-        None,  # covars,
-        quats,
-        scales,
-        viewmats,
-        Ks,
-        int(viewpoint_camera.image_width),
-        int(viewpoint_camera.image_height),
-        eps2d=0.3,
-        packed=False,
-        near_plane=0.01,
-        far_plane=1e10,
-        radius_clip=0.0,
-        sparse_grad=False,
-        calc_compensations=False,
-    )
-    
-    # The results are with shape [C, N, ...]. Only the elements with radii > 0 are valid.
-    radii, means2d, depths, conics, compensations = proj_results
-    camera_ids, gaussian_ids = None, None
-    
-    visible_mask = pc._anchor_mask.clone()
-    visible_mask[pc._anchor_mask] = radii.squeeze(0) > 0
-    
-    return visible_mask
-
-def render_2dgs(viewpoint_camera, pc, pipe, bg_color, iteration, render_mode):
-    """
-    Render the scene. 
-    
-    Background tensor (bg_color) must be on GPU!
-    """
-
-    assert render_mode=="RGB+ED", "Only RGB+ED mode is supported for 2D Gaussians."
-    pc.set_anchor_mask(viewpoint_camera.camera_center, iteration, viewpoint_camera.resolution_scale)
-    visible_mask = prefilter_voxel_2dgs(viewpoint_camera, pc, pipe, bg_color).squeeze()
-    xyz, color, opacity, scaling, rot, sh_degree, selection_mask = pc.generate_neural_gaussians(viewpoint_camera, visible_mask)
-    
-    # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-
-    focal_length_x = viewpoint_camera.image_width / (2 * tanfovx)
-    focal_length_y = viewpoint_camera.image_height / (2 * tanfovy)
-    K = torch.tensor(
-        [
-            [focal_length_x, 0, viewpoint_camera.image_width / 2.0],
-            [0, focal_length_y, viewpoint_camera.image_height / 2.0],
-            [0, 0, 1],
-        ],
-        device="cuda",
-    )
-    
-    viewmat = viewpoint_camera.world_view_transform.transpose(0, 1) # [4, 4]
-    (render_colors, 
-    render_alphas,
-    render_normals,
-    render_normals_from_depth,
-    render_distort,
-    render_median,), info = \
-    gsplat.rasterization_2dgs(
-        means=xyz,  # [N, 3]
-        quats=rot,  # [N, 4]
-        scales=scaling,  # [N, 3]
-        opacities=opacity.squeeze(-1),  # [N,]
-        colors=color,
-        viewmats=viewmat[None],  # [1, 4, 4]
-        Ks=K[None],  # [1, 3, 3]
-        backgrounds=bg_color[None],
-        width=int(viewpoint_camera.image_width),
-        height=int(viewpoint_camera.image_height),
-        packed=False,
-        sh_degree=sh_degree,
-        render_mode=render_mode,
-    )
-
-    # [1, H, W, 3] -> [3, H, W]
-    if render_colors.shape[-1] == 4:
-        colors, depths = render_colors[..., 0:3], render_colors[..., 3:4]
-        depth = depths[0].permute(2, 0, 1)
-    else:
-        colors = render_colors
-        depth = None
-
-    rendered_image = colors[0].permute(2, 0, 1)
-    radii = info["radii"].squeeze(0) # [N,]
-    try:
-        info["means2d"].retain_grad() # [1, N, 2]
-    except:
-        pass
+    render_alphas = render_alphas[0].permute(2, 0, 1)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     return_dict = {
@@ -220,36 +99,35 @@ def render_2dgs(viewpoint_camera, pc, pipe, bg_color, iteration, render_mode):
         "selection_mask": selection_mask,
         "opacity": opacity,
         "render_depth": depth,
-        "render_normals": render_normals,
+        "radii": radii,
         "render_alphas": render_alphas,
-        "render_normals_from_depth": render_normals_from_depth,
-        "render_distort": render_distort,
     }
+    
+    if pc.gs_attr[-2:] == "2D":
+        return_dict.update({
+            "render_normals": render_normals,
+            "render_normals_from_depth": render_normals_from_depth,
+            "render_distort": render_distort,
+        })
     
     return return_dict
 
-
-def prefilter_voxel_2dgs(viewpoint_camera, pc, pipe, bg_color):
+def prefilter_voxel(viewpoint_camera, pc):
     """
     Render the scene. 
     
     Background tensor (bg_color) must be on GPU!
     """
-    
     means = pc.get_anchor[pc._anchor_mask]
     scales = pc.get_scaling[pc._anchor_mask][:, :3]
     quats = pc.get_rotation[pc._anchor_mask]
+    
     # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    focal_length_x = viewpoint_camera.image_width / (2 * tanfovx)
-    focal_length_y = viewpoint_camera.image_height / (2 * tanfovy)
-
     Ks = torch.tensor([
-            [focal_length_x, 0, viewpoint_camera.image_width / 2.0],
-            [0, focal_length_y, viewpoint_camera.image_height / 2.0],
+            [viewpoint_camera.fx, 0, viewpoint_camera.cx],
+            [0, viewpoint_camera.fy, viewpoint_camera.cy],
             [0, 0, 1],
-        ],device="cuda",)[None]
+        ],dtype=torch.float32, device="cuda")[None]
     viewmats = viewpoint_camera.world_view_transform.transpose(0, 1)[None]
 
     N = means.shape[0]
@@ -261,26 +139,48 @@ def prefilter_voxel_2dgs(viewpoint_camera, pc, pipe, bg_color):
     assert viewmats.shape == (C, 4, 4), viewmats.shape
     assert Ks.shape == (C, 3, 3), Ks.shape
 
-    densifications = (
-        torch.zeros((C, N, 2), dtype=means.dtype, device="cuda")
-    )
     # Project Gaussians to 2D. Directly pass in {quats, scales} is faster than precomputing covars.
-    proj_results = fully_fused_projection_2dgs(
-        means,
-        quats,
-        scales,
-        viewmats,
-        densifications,
-        Ks,
-        int(viewpoint_camera.image_width),
-        int(viewpoint_camera.image_height),
-        eps2d=0.3,
-        packed=False,
-        near_plane=0.01,
-        far_plane=1e10,
-        radius_clip=0.0,
-        sparse_grad=False,
-    )
+    if pc.gs_attr[-2:] == "3D":
+        proj_results = fully_fused_projection(
+            means,
+            None,  # covars,
+            quats,
+            scales,
+            viewmats,
+            Ks,
+            int(viewpoint_camera.image_width),
+            int(viewpoint_camera.image_height),
+            eps2d=0.3,
+            packed=False,
+            near_plane=0.01,
+            far_plane=1e10,
+            radius_clip=0.0,
+            sparse_grad=False,
+            calc_compensations=False,
+        )
+    elif pc.gs_attr[-2:] == "2D":
+        densifications = (
+            torch.zeros((C, N, 2), dtype=means.dtype, device="cuda")
+        )
+        # Project Gaussians to 2D. Directly pass in {quats, scales} is faster than precomputing covars.
+        proj_results = fully_fused_projection_2dgs(
+            means,
+            quats,
+            scales,
+            viewmats,
+            densifications,
+            Ks,
+            int(viewpoint_camera.image_width),
+            int(viewpoint_camera.image_height),
+            eps2d=0.3,
+            packed=False,
+            near_plane=0.01,
+            far_plane=1e10,
+            radius_clip=0.0,
+            sparse_grad=False,
+        )
+    else:
+        raise ValueError(f"Unknown gs_attr: {pc.gs_attr}")
     
     # The results are with shape [C, N, ...]. Only the elements with radii > 0 are valid.
     radii, means2d, depths, conics, compensations = proj_results
@@ -288,5 +188,5 @@ def prefilter_voxel_2dgs(viewpoint_camera, pc, pipe, bg_color):
     
     visible_mask = pc._anchor_mask.clone()
     visible_mask[pc._anchor_mask] = radii.squeeze(0) > 0
-    
+
     return visible_mask
